@@ -7,3 +7,13 @@ Procurement in Public Cloud." 2019 IEEE 12th International Conference on Cloud C
 
 Download python2.7 and install it on your local directory and use that path
 Download traces from the trace folder
+
+General Information
+======================
+
+you need to pass the following command line arguments.
+
+arg1- schedule_type
+arg2- load_tracking enable
+arg3- burst_threshold
+arg4- directory to store result files
