@@ -2,8 +2,9 @@ import time
 import logging
 import math
 import random
-from multiprocessing import Queue
-import Queue
+import multiprocessing
+from multiprocessing import Process, Queue
+from queue import PriorityQueue
 import copy
 import collections
 import sys
@@ -43,6 +44,15 @@ def plot_cdf(values, filename):
 def lambda_cost(num, mem, time):
     return float(num*0.0000002 + (num*mem*time*0.00001667))
 
+import time
+from dataclasses import dataclass, field
+
+@dataclass(order=True)
+class PrioritizedItem:
+    current_time: float
+    timestamp: float = field(init=False, default_factory=time.time)
+    data: object = field(compare=False)
+
 class TaskEndEvent:
 
     def __init__(self, worker):
@@ -63,6 +73,7 @@ class Lambda(object):
         self.simulation = simulation
         self.start_time = current_time
         self.up_time = up_time
+        self.exec_time = float(400)
         if task_type == 0:
             self.exec_time = float(400)
             self.mem = float(2024)
@@ -77,17 +88,25 @@ class Lambda(object):
         task_duration = self.simulation.tasks[task_id].exec_time
         probe_response_time = 5 + current_time
         task = self.simulation.tasks[task_id]
+        task_end_time = task_duration + probe_response_time
         if task_duration > 0:
             task_end_time = task_duration + probe_response_time
-            print >> tasks_file,"task_id ,", task.id, ",", "task_type," ,task.task_type,  ",",  "lambda task" , ",task_end_time ,", task_end_time, ",", "task_start_time,",task.start_time, ",", " each_task_running_time,",(task_end_time - task.start_time),",", " task_queuing_time:,", (task_end_time - task.start_time) - task.exec_time
+            print ("task_id ,", task.id, ",", "task_type," ,task.task_type,  ",",  "lambda task" , ",task_end_time ,", task_end_time, ",", "task_start_time,",task.start_time, ",", " each_task_running_time,",(task_end_time - task.start_time),",", " task_queuing_time:,", (task_end_time - task.start_time) - task.exec_time,file=tasks_file)
 
         if(self.simulation.add_task_completion_time(task_id,
             task_end_time,1)):
 
-            print >> finished_file,"num_tasks ,", task.num_tasks, "," ,"VM_tasks ,", task.vm_tasks,"lambda_tasks ,", task.lambda_tasks ,"task_end_time, ", task_end_time,",", "task_start_time,",task.start_time,",", " each_task_running_time, ",(task.end_time - task.start_time)
+            print ("num_tasks ,", task.num_tasks, "," ,"VM_tasks ,", task.vm_tasks,"lambda_tasks ,", task.lambda_tasks ,"task_end_time, ", task_end_time,",", "task_start_time,",task.start_time,",", " each_task_running_time, ",(task.end_time - task.start_time),file=finished_file)
 
             new_event = TaskEndEvent(self)
+            tasks_file.flush()
+            finished_file.flush()
+            f.flush()
+            os.fsync(tasks_file.fileno())
+            os.fsync(finished_file.fileno())
+            os.fsync(f.fileno())
             return [(task_end_time, new_event)]
+
         return []
     def free_slot(self, current_time):
         #self.free_slots += 1
@@ -116,7 +135,7 @@ class VM(object):
         self.end_time = current_time
         self.vcpu = vcpu
         self.vmem = vmem
-        self.queued_tasks = Queue.PriorityQueue()
+        self.queued_tasks = PriorityQueue()
         self.id = id
         self.isIdle = True
         self.lastIdleTime = current_time
@@ -179,12 +198,17 @@ class VM(object):
                 task = self.simulation.tasks[task_id]
                 #if task.id >=15548:
                  #   print ("task id ", task.id, "task type" , "VM id" , self.id, task.task_type, "task_end_time ", task_end_time, "task_start_time:",task.start_time, " each_task_running_time: ",(task_end_time - task.start_time))
-                print >> tasks_file,"task_id ,", task.id,",",  "task_type," ,task.task_type, ",", "VM_id," , self.id ,",", "task_end_time ,", task_end_time, ",", "task_start_time,",task.start_time, ",", " each_task_running_time,",(task_end_time - task.start_time), ",", " task_queuing_time:,", (task_end_time - task.start_time) - task.exec_time
+                print ("task_id ,", task.id,",",  "task_type," ,task.task_type, ",", "VM_id," , self.id ,",", "task_end_time ,", task_end_time, ",", "task_start_time,",task.start_time, ",", " each_task_running_time,",(task_end_time - task.start_time), ",", " task_queuing_time:,", (task_end_time - task.start_time) - task.exec_time,file=tasks_file)
                 if(self.simulation.add_task_completion_time(task_id,
                     task_end_time,0)):
                     #print "writing to file"
-                    print >> finished_file,"num tasks ", task.num_tasks, "," ,"VM_tasks ,", task.vm_tasks,"lambda_tasks ,", task.lambda_tasks , "task_end_time, ", task_end_time, "task_start_time,",task.start_time, " each_task_running_time ,",(task.end_time - task.start_time)
+                    print ("num tasks ", task.num_tasks, "," ,"VM_tasks ,", task.vm_tasks,"lambda_tasks ,", task.lambda_tasks , "task_end_time, ", task_end_time, "task_start_time,",task.start_time, " each_task_running_time ,",(task.end_time - task.start_time),file=finished_file)
+                tasks_file.flush()
+                finished_file.flush()
+                os.fsync(tasks_file)
+                os.fsync(finished_file)
                 return [(task_end_time, new_event)]
+
         return []
 
     def free_slot(self, current_time):
@@ -211,6 +235,7 @@ class Task(object):
         self.completed_tasks = 0
         self.lambda_tasks = 0
         self.vm_tasks = 0
+        self.exec_time = 400
         if task_type == 0:
             self.exec_time = 400
             self.mem = 1024
@@ -305,7 +330,7 @@ class VMCreateEvent(Event):
         self.task_type = task_type
     def run(self, current_time):
         #self.VMs[self.task_type].append(VM(self.simulation,current_time,60000,self.task_type,4,8192,0.10,True,len(self.VMs[self.task_type])))
-        print " spin up compeleted for VM", self.VM.id, self.task_type
+        #print (" spin up compeleted for VM", self.VM.id, self.task_type)
         self.VM.spin_up = False
         new_events = []
         return new_events
@@ -316,11 +341,12 @@ class VM_Monitor_Event(Event):
     def run(self, current_time):
         new_events = []
         global last_task
-        print("M_monito_EVENT")
+        global tasks_file, finished_file, load_file, f,finished_file_path,all_tasks_path
+        #print("M_monito_EVENT")
         for index in range(3):
             width = len(self.simulation.VMs[index])
             k=0
-            print( len(self.simulation.VMs[index]), len(self.simulation.completed_VMs[index]))
+            #print( len(self.simulation.VMs[index]), len(self.simulation.completed_VMs[index]))
             while k < width:
                 if (not self.simulation.VMs[index][k].spin_up):
                     if(not self.simulation.VMs[index][k].VM_status(current_time) and self.simulation.VMs[index][k].isIdle):
@@ -328,13 +354,26 @@ class VM_Monitor_Event(Event):
                         #if(current_time - self.simulation.VMs[index][k].start_time >=3600000):
                             self.simulation.completed_VMs.setdefault(index,[]).append(self.simulation.VMs[index][k])
                             self.simulation.VMs[index][k].end_time = current_time
-                            print >> f, self.simulation.VMs[index][k].id, ",",self.simulation.VMs[index][k].end_time,",", self.simulation.VMs[index][k].start_time,",", self.simulation.VMs[index][k].lastIdleTime
+                            print ( self.simulation.VMs[index][k].id, ",",self.simulation.VMs[index][k].end_time,",", self.simulation.VMs[index][k].start_time,",", self.simulation.VMs[index][k].lastIdleTime,file=f)
                             del self.simulation.VMs[index][k]
-                            print index, len(self.simulation.completed_VMs[index]),"width changing"
+                            #print index, len(self.simulation.completed_VMs[index]),"width changing"
                         width-=1
                 k+=1
         if(self.simulation.event_queue.qsize() > 1 and last_task==0):
             new_events.append((current_time+180000,VM_Monitor_Event(self.simulation)))
+
+        tasks_file.flush()
+        f.flush()
+        load_file.flush()
+        finished_file.flush()
+        os.fsync(tasks_file.fileno())
+        os.fsync(f.fileno())
+        os.fsync(load_file.fileno())
+        os.fsync(finished_file.fileno())
+        finished_file.close()
+        tasks_file.close()
+        finished_file = open(finished_file_path,'a')
+        tasks_file = open(all_tasks_path,'a')
         return new_events
 
 class PeriodicTimerEvent(Event):
@@ -344,7 +383,7 @@ class PeriodicTimerEvent(Event):
     def run(self, current_time):
         new_events = []
         global last_task
-        print("periodic timer event",current_time,"VM1 VM2 VM3",len(self.simulation.VMs[0]),len(self.simulation.VMs[1]),len(self.simulation.VMs[2]))
+        #print("periodic timer event",current_time,"VM1 VM2 VM3",len(self.simulation.VMs[0]),len(self.simulation.VMs[1]),len(self.simulation.VMs[2]))
       #  total_load       = str(int(10000*(1-self.simulation.total_free_slots*1.0/(TOTAL_WORKERS*SLOTS_PER_WORKER)))/100.0)
       #  small_load       = str(int(10000*(1-self.simulation.free_slots_small_partition*1.0/len(self.simulation.small_partition_workers)))/100.0)
       #  big_load         = str(int(10000*(1-self.simulation.free_slots_big_partition*1.0/len(self.simulation.big_partition_workers)))/100.0)
@@ -357,8 +396,11 @@ class PeriodicTimerEvent(Event):
                 for j in range (len(self.simulation.VMs[i])):
                     if((float(self.simulation.VMs[i][j].num_queued_tasks)/float(self.simulation.VMs[i][j].max_slots)) <=0.4):
                         low_load+=1
-                print >> load_file,"VM type," + str(i) + "low_load: "+ str(low_load) + ",num_vms," + str(len(self.simulation.VMs[i])) + ",current_time: " + str(current_time)
-                print "load written", i, low_load, len(self.simulation.VMs[i]), float(self.simulation.VMs[i][0].free_slots),self.simulation.VMs[i][0].num_queued_tasks
+                print ("VM type," + str(i) + "low_load: "+ str(low_load) + ",num_vms," + str(len(self.simulation.VMs[i])) + ",current_time: " + str(current_time),file=load_file)
+                os.fsync(tasks_file.fileno())
+                os.fsync(load_file.fileno())
+                os.fsync(finished_file.fileno())
+                print ("load written", i, low_load, len(self.simulation.VMs[i]), float(self.simulation.VMs[i][0].free_slots),self.simulation.VMs[i][0].num_queued_tasks)
         if(VM_PREDICTION == 1):
             for i in range(3):
                 #print self.simulation.task_arrival[i]
@@ -375,7 +417,7 @@ class PeriodicTimerEvent(Event):
                 #print model
                 X_predict = np.array([current_time+start_up_delay]).reshape(-1,1)
                 y_predict = burst_threshold * model.predict([X_predict[0]])
-                print "predicted requests",int(y_predict),"VMs",int(y_predict)/self.simulation.VMs[i][0].max_slots
+                print ("predicted requests",int(y_predict),"VMs",int(y_predict)/self.simulation.VMs[i][0].max_slots)
                 if(int(y_predict) > len(self.simulation.VMs[i])*self.simulation.VMs[i][0].max_slots):
                     print ("rolling mean more",y_predict, "existing VM size", len(self.simulation.VMs[i])*self.simulation.VMs[i][0].max_slots)
                     num_vms = int(math.ceil(int(int(y_predict)- len(self.simulation.VMs[i])*self.simulation.VMs[i][0].max_slots)/int(self.simulation.VMs[i][0].max_slots)))
@@ -450,7 +492,7 @@ class Simulation(object):
         self.task_arrival = defaultdict(list)
         # self. num_jobs
 
-        self.event_queue = Queue.PriorityQueue()
+        self.event_queue = PriorityQueue()
         self.VMs = defaultdict(lambda: np.ndarray(0))
         self.completed_VMs = defaultdict(list)
         self.lambdas = defaultdict()
@@ -460,7 +502,7 @@ class Simulation(object):
         while j < INITIAL_WORKERS:
             i = 0
             while i < 3:
-                self.VMs.setdefault(i, []).append(VM(self,0,start_up_delay,i,4,8192, 0.10,False,len(self.VMs[i])))
+                self.VMs.setdefault(i, []).append(VM(self,0,start_up_delay,i,4,8192, 0.17,True,len(self.VMs[i])))
                 i += 1
             j += 1
         #print self.VMs
@@ -506,7 +548,7 @@ class Simulation(object):
 
                     if(len(self.VMs[task.task_type])):
                         if(len(self.VMs[task.task_type])*self.VMs[task.task_type][0].max_slots < (task.num_tasks)):
-                            print "Starting new VM", task.task_type, len(self.VMs[task.task_type])*self.VMs[task.task_type][0].max_slots, task.num_tasks
+                            #print ("Starting new VM", task.task_type, len(self.VMs[task.task_type])*self.VMs[task.task_type][0].max_slots, task.num_tasks)
                             self.VMs.setdefault(task.task_type,[]).append(VM(self,current_time,start_up_delay,task.task_type,4,8192,0.10,True,len(self.VMs[task.task_type])))
                             schedule_events.append((current_time+start_up_delay,VMCreateEvent(self,self.VMs[task.task_type][-1],task.task_type)))
 
@@ -577,13 +619,13 @@ class Simulation(object):
 
                     #schedule_events.append((current_time+100000,VMCreateEvent(self,task.task_type)))
                     if(len(self.VMs[task.task_type]) * self.VMs[task.task_type][0].max_slots < (task.num_tasks)):
-                        print "Starting new VM", task.task_type, len(self.VMs[task.task_type])*self.VMs[task.task_type][0].max_slots, task.num_tasks
+                        #print ("Starting new VM", task.task_type, len(self.VMs[task.task_type])*self.VMs[task.task_type][0].max_slots, task.num_tasks)
                         self.VMs.setdefault(task.task_type,[]).append(VM(self,current_time,start_up_delay,task.task_type,4,8192,0.10,True,len(self.VMs[task.task_type])))
                         schedule_events.append((current_time+start_up_delay,VMCreateEvent(self,self.VMs[task.task_type][-1],task.task_type)))
                         vmid = random.randint(0,len(self.VMs[task.task_type])/2)
                         while(vmid == i):
                             vmid = random.randint(0,len(self.VMs[task.task_type])/2)
-                        print "queue behind VM", vmid
+                        #print ("queue behind VM", vmid)
                         schedule_events.append((current_time,ScheduleVMEvent(self.VMs[task.task_type][vmid],task.id)))
                     else:
                          vmid = random.randint(0,len(self.VMs[task.task_type])/2)
@@ -620,16 +662,16 @@ class Simulation(object):
                     #schedule_events.append((current_time+100000,VMCreateEvent(self,task.task_type)))
                     if(len(self.VMs[task.task_type]) * self.VMs[task.task_type][0].max_slots < (task.num_tasks)):
                         num_vms_needed = int(task.num_tasks/self.VMs[task.task_type][0].max_slots)
-                        print "befiore",num_vms_needed
+                        #print "befiore",num_vms_needed
                         num_vms_needed = int(num_vms_needed * burst_threshold) - len(self.VMs[task.task_type])
-                        print "Starting new VM",num_vms_needed, task.task_type, len(self.VMs[task.task_type])*self.VMs[task.task_type][0].max_slots, task.num_tasks
+                        #print "Starting new VM",num_vms_needed, task.task_type, len(self.VMs[task.task_type])*self.VMs[task.task_type][0].max_slots, task.num_tasks
                         for j in range(num_vms_needed):
                             self.VMs.setdefault(task.task_type,[]).append(VM(self,current_time,start_up_delay,task.task_type,4,8192,0.10,True,len(self.VMs[task.task_type])))
                             schedule_events.append((current_time+start_up_delay,VMCreateEvent(self,self.VMs[task.task_type][-1],task.task_type)))
                         vmid = random.randint(0,len(self.VMs[task.task_type])/2)
                         while(vmid == i):
                             vmid = random.randint(0,len(self.VMs[task.task_type])/2)
-                        print "queue behind VM", vmid
+                        #print "queue behind VM", vmid
                         schedule_events.append((current_time,ScheduleVMEvent(self.VMs[task.task_type][vmid],task.id)))
                     else:
                          vmid = random.randint(0,len(self.VMs[task.task_type])/2)
@@ -696,7 +738,7 @@ class Simulation(object):
        #/ f = open(VM_stats_path,'w')
         for i in range(3):
             for j in range(len(self.VMs[i])):
-                print >> f,i,",", end_time ,",",self.VMs[i][j].start_time,",", self.VMs[i][j].lastIdleTime
+                print (i,",", end_time ,",",self.VMs[i][j].start_time,",", self.VMs[i][j].lastIdleTime,file=f)
                 total_cost+=self.VMs[i][j].price * ((end_time - self.VMs[i][j].start_time)/3600000)
         for i in range(3):
             for j in range(len(self.completed_VMs[i])):
@@ -716,29 +758,32 @@ class Simulation(object):
 
         # new_task = Task(self, line, 1000, start_time, num_tasks, task_type)
 
-        self.event_queue.put((start_time * 1000, TaskArrival(self,
+        self.event_queue.put(PrioritizedItem(start_time * 1000, TaskArrival(self,
             start_time * 1000, num_tasks, task_type)))
         last_time = 0
-        self.event_queue.put(((start_time*1000)+60000, PeriodicTimerEvent(self)))
-        self.event_queue.put(((start_time*1000)+60000, VM_Monitor_Event(self)))
+        self.event_queue.put(PrioritizedItem((start_time*1000)+60000, PeriodicTimerEvent(self)))
+        self.event_queue.put(PrioritizedItem((start_time*1000)+60000, VM_Monitor_Event(self)))
         while not self.event_queue.empty():
-            (current_time, event) = self.event_queue.get()
+            #(current_time, event) = self.event_queue.get()
+            temp_PrioritizedItem = self.event_queue.get()
+            (current_time, event) = (temp_PrioritizedItem.current_time, temp_PrioritizedItem.data)
             #print current_time, event, self.event_queue.qsize()
             #assert current_time >= last_time
             last_time = current_time
             new_events = event.run(current_time)
             for new_event in new_events:
-                self.event_queue.put(new_event)
+                (current_time, event) = new_event
+                self.event_queue.put(PrioritizedItem(current_time, event))
         self.tasks_file.close()
         total_VM_cost = self.calculate_cost(current_time)
         cost_file = open(cost_path,'w')
         print ("total VM cost is",total_VM_cost)
-        print >> cost_file,"total VM cost is",total_VM_cost
+        print ("total VM cost is",total_VM_cost,file=cost_file)
         self.file_prefix = "pdf"
         complete_jobs = [j for j in self.tasks.values()
                 if j.completed_tasks == j.num_tasks]
         print ('%s complete jobs' % len(complete_jobs))
-        print >> cost_file,'%s complete jobs' % len(complete_jobs)
+        print ('%s complete jobs' % len(complete_jobs),file=cost_file)
         response_times = [job.end_time - job.start_time for job in
                 complete_jobs if job.start_time > 500]
 
@@ -746,20 +791,20 @@ class Simulation(object):
         plot_cdf(response_times, "%s_response_times.data" % self.file_prefix)
 
         print ('Average response time: ', np.mean(response_times))
-        print >> cost_file ,'Average response time: ', np.mean(response_times)
+        print ('Average response time: ', np.mean(response_times),file=cost_file)
 
         total_lambda_cost = 0
         for i in range(3):
             print ("type ",i,"lambda tasks", len(self.lambdas[i]))
-            print >> cost_file, "type ",i,"lambda tasks", len(self.lambdas[i])
+            print ("type ",i,"lambda tasks", len(self.lambdas[i]),file=cost_file)
             print ("type ",i,"lamda cost: ",lambda_cost(len(self.lambdas[i]), self.lambdas[i][0].mem/1024, self.lambdas[i][0].exec_time/1000))
-            print >> cost_file , "type ",i,"lamda cost: ",lambda_cost(len(self.lambdas[i]), self.lambdas[i][0].mem/1024, self.lambdas[i][0].exec_time/1000)
+            print ("type ",i,"lamda cost: ",lambda_cost(len(self.lambdas[i]), self.lambdas[i][0].mem/1024, self.lambdas[i][0].exec_time/1000),file=cost_file)
             total_lambda_cost+=lambda_cost(len(self.lambdas[i]), self.lambdas[i][0].mem/1024, self.lambdas[i][0].exec_time/1000)
         # longest_tasks = [job.longest_task for job in complete_jobs]
         print ("total lambda cost ", total_lambda_cost)
-        print >> cost_file, "total lambda cost ", total_lambda_cost
+        print ("total lambda cost ", total_lambda_cost,file=cost_file)
         print ("total cost of deployment ", total_lambda_cost + total_VM_cost)
-        print >> cost_file, "total cost of deployment ", total_lambda_cost + total_VM_cost
+        print ( "total cost of deployment ", total_lambda_cost + total_VM_cost,file=cost_file)
         # plot_cdf(longest_tasks, "%s_ideal_response_time.data" % self.file_prefix)
 
 random.seed(1)
@@ -770,14 +815,14 @@ all_tasks_path = os.path.join(sys.argv[5], 'all_tasks.csv')
 VM_stats_path = os.path.join(sys.argv[5], 'VM_stats.csv')
 load_file_path =  os.path.join(sys.argv[5], 'load')
 cost_path = os.path.join(sys.argv[5], 'cost')
-f = open(VM_stats_path,'w')
+f = open(VM_stats_path,'a')
 logging.basicConfig(level=logging.INFO)
 schedule_type = int(sys.argv[2])
 load_tracking = int(sys.argv[3])
 burst_threshold = float(sys.argv[4])
-finished_file = open(finished_file_path,'w')
-tasks_file = open(all_tasks_path,'w')
-load_file = open(load_file_path,'w')
+finished_file = open(finished_file_path,'a')
+tasks_file = open(all_tasks_path,'a')
+load_file = open(load_file_path,'a')
 sim = Simulation(sys.argv[1])
 sim.run()
 f.close()
