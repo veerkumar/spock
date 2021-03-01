@@ -316,8 +316,8 @@ class TaskArrival(Event):
 
         #print "adding new task",int(start_time*1000), num_tasks, task_type
         # new_task = Task(self, line, 1000, start_time, num_tasks, task_type)
-
-        new_events.append((start_time * 1000,
+        if (start_time <= 3600):
+            new_events.append((start_time * 1000,
             TaskArrival(self.simulation, start_time
                 * 1000, num_tasks, task_type)))
         #print ("task arrival new events", new_events)
@@ -794,7 +794,7 @@ class Simulation(object):
         print ('Average response time: ', np.mean(response_times),file=cost_file)
 
         total_lambda_cost = 0
-        for i in range(3):
+        for i in range(len(self.lambdas)):
             print ("type ",i,"lambda tasks", len(self.lambdas[i]))
             print ("type ",i,"lambda tasks", len(self.lambdas[i]),file=cost_file)
             print ("type ",i,"lamda cost: ",lambda_cost(len(self.lambdas[i]), self.lambdas[i][0].mem/1024, self.lambdas[i][0].exec_time/1000))
